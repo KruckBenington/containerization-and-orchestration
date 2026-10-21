@@ -74,6 +74,18 @@ curl "http://localhost:8080/burn" &
 Смотрим статистику троттлинга ядра (счётчики nr_throttled и throttled_usec будут расти)
 cat /sys/fs/cgroup/mylab/cpu.stat
 
+----
+
+2. Задаём жёсткий лимит: не более 5 процессов на всю группу
+echo "5" | sudo tee /sys/fs/cgroup/mylab/pids.max
+
+Привязываем текущую сессию терминала к группе mylab
+echo $$ | sudo tee /sys/fs/cgroup/mylab/cgroup.procs
+
+Запускаем стресс-тест на порождение процессов
+stress-ng --fork 30 --timeout 5s
+
+cat /sys/fs/cgroup/mylab/pids.current
 
 
 ## Часть 4 — права
