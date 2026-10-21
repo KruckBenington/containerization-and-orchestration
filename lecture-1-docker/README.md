@@ -5,19 +5,15 @@
 
 ## Часть 1 — Запусти напрямую
 
-Запусти сервис напрямую на устройстве. Открой в браузере, покажи, что отдаёт `/health`. Посмотри процесс в `ps` на хосте, отметь его PID.
+<img width="1000" height="295" alt="Screenshot_2026-10-19_19-41-13" src="https://github.com/user-attachments/assets/e5491d5d-9a52-45c0-ae21-22a17adf9380" />
 
-Это точка отсчёта: изоляции нет, процесс видит всю систему и может взять сколько угодно ресурсов.
 
 ## Часть 2 — namespaces
 
-Помести процесс в свои namespaces через `unshare` (pid, mount, net, uts, ipc и user). Зайди внутрь и покажи:
+<img width="911" height="226" alt="Screenshot_2026-10-21_12-36-54" src="https://github.com/user-attachments/assets/851f2830-e406-4663-aabc-a315db926439" />
+<img width="1125" height="496" alt="Screenshot_2026-10-21_12-38-30" src="https://github.com/user-attachments/assets/1c0875c0-da3f-49c8-a603-875ecdb0e733" />
+<img width="866" height="719" alt="Screenshot_2026-10-21_12-38-57" src="https://github.com/user-attachments/assets/b611ce0a-4841-4d8f-9620-a78ddfb39e24" />
 
-- изнутри процесс — PID 1, чужих процессов не видит;
-- у него своё имя хоста и своя пустая сеть;
-- root внутри — это непривилегированный пользователь снаружи (проверь, под каким uid процесс виден на хосте).
-
-Отметь в README, что изолировал каждый namespace.
 
 ## Часть 3 — cgroups
 
