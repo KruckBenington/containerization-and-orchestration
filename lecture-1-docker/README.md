@@ -36,11 +36,28 @@
 
 ## Часть 3 — cgroups
 
-Заведи для процесса cgroup v2 и навесь лимиты. Проверь каждый через свой сервис:
+# Создаём подгруппу для сервиса в cgroups v2
+sudo mkdir -p /sys/fs/cgroup/mylab
 
-- память: задай небольшой потолок, дёрни `/eat?mb=...` за него, поймай OOM. Это то же самое, что `OOMKilled` в Kubernetes;
-- CPU: задай лимит (например, пол-ядра), дёрни `/burn`, найди throttling в статистике cgroup;
-- процессы: задай `pids.max`, запусти форк-бомбу через `stress-ng --fork`, покажи, что расплодиться не дают.
+# Разрешаем дочерним папкам управлять памятью
+echo "+cpu +memory +pids" | sudo tee /sys/fs/cgroup/cgroup.subtree_control
+
+# Ставим лимит 50 МБ (50 * 1024 * 1024 байт)
+echo "52428800" | sudo tee /sys/fs/cgroup/mylab/memory.max
+
+# Запускаем сервис в фоне
+./api
+
+# Добавляем PID запущенного сервиса в cgroup
+echo PID | sudo tee /sys/fs/cgroup/mylab/cgroup.procs
+
+# Запрашиваем 80 МБ при лимите в 50 МБ (вызываем OOM-killer)
+curl "http://localhost:8080/eat?mb=80"
+
+# Смотрим счётчик OOM (oom_kill должен стать равен 1)
+cat /sys/fs/cgroup/mylab/memory.events
+
+
 
 ## Часть 4 — права
 
