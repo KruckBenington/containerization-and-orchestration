@@ -3,6 +3,7 @@
 ## Часть 0 — Свой сервис
 
 
+
 ## Часть 1 — Запусти напрямую
 
 <img width="1000" height="295" alt="Screenshot_2026-10-19_19-41-13" src="https://github.com/user-attachments/assets/e5491d5d-9a52-45c0-ae21-22a17adf9380" />
