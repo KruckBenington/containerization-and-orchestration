@@ -36,25 +36,25 @@
 
 ## Часть 3 — cgroups
 
-# Создаём подгруппу для сервиса в cgroups v2
+Создаём подгруппу для сервиса в cgroups v2
 sudo mkdir -p /sys/fs/cgroup/mylab
 
-# Разрешаем дочерним папкам управлять памятью
+Разрешаем дочерним папкам управлять памятью
 echo "+cpu +memory +pids" | sudo tee /sys/fs/cgroup/cgroup.subtree_control
 
-# Ставим лимит 50 МБ (50 * 1024 * 1024 байт)
+Ставим лимит 50 МБ (50 * 1024 * 1024 байт)
 echo "52428800" | sudo tee /sys/fs/cgroup/mylab/memory.max
 
-# Запускаем сервис в фоне
+Запускаем сервис в фоне
 ./api
 
-# Добавляем PID запущенного сервиса в cgroup
+Добавляем PID запущенного сервиса в cgroup
 echo PID | sudo tee /sys/fs/cgroup/mylab/cgroup.procs
 
-# Запрашиваем 80 МБ при лимите в 50 МБ (вызываем OOM-killer)
+Запрашиваем 80 МБ при лимите в 50 МБ (вызываем OOM-killer)
 curl "http://localhost:8080/eat?mb=80"
 
-# Смотрим счётчик OOM (oom_kill должен стать равен 1)
+Смотрим счётчик OOM (oom_kill должен стать равен 1)
 cat /sys/fs/cgroup/mylab/memory.events
 
 
