@@ -57,6 +57,23 @@ curl "http://localhost:8080/eat?mb=80"
 Смотрим счётчик OOM (oom_kill должен стать равен 1)
 cat /sys/fs/cgroup/mylab/memory.events
 
+-----
+
+Задаём квоту: 50 000 мкс из периода 100 000 мкс (ровно 0.5 ядра = 50% CPU)
+echo "50000 100000" | sudo tee /sys/fs/cgroup/mylab/cpu.max
+
+Запускаем сервис в фоне
+./api &
+
+Привязываем PID сервиса к нашей cgroup
+echo $(pgrep -n api) | sudo tee /sys/fs/cgroup/mylab/cgroup.procs
+
+Нагружаем процессор на 100% бесконечным циклом через ручку /burn
+curl "http://localhost:8080/burn" &
+
+Смотрим статистику троттлинга ядра (счётчики nr_throttled и throttled_usec будут расти)
+cat /sys/fs/cgroup/mylab/cpu.stat
+
 
 
 ## Часть 4 — права
