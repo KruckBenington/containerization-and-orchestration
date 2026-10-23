@@ -90,12 +90,30 @@ cat /sys/fs/cgroup/mylab/pids.current
 
 ## Часть 4 — права
 
-Оставь процессу только нужный минимум:
+Запускаем сервис ./api от root в фоне, отобрав у него право менять время (cap_sys_time)
+sudo capsh --drop=cap_sys_time -- -c "./api" &
 
-- сбрось лишние capabilities и покажи, что привилегированное действие (например, смена системного времени) больше не проходит;
-- навесь seccomp-профиль и покажи, что заблокированный системный вызов отклоняется.
+Входим в контекст запущенного ./api через nsenter и пытаемся изменить дату (получаем: date: cannot set date: Operation not permitted)
+sudo nsenter -t $(pgrep -n api) -a capsh --drop=cap_sys_time -- -c "date -s '2027-01-01 00:00:00'"
 
-Опиши, что закрывает каждый механизм.
+
+Создаем конфиг seccomp.json с запретом сетевого системного вызова listen (нужен для сдачи)
+cat << 'EOF' > seccomp.json
+{
+  "defaultAction": "SCMP_ACT_ALLOW",
+  "architectures": ["SCMP_ARCH_X86_64"],
+  "syscalls": [
+    {
+      "names": ["listen"],
+      "action": "SCMP_ACT_KILL"
+    }
+  ]
+}
+EOF
+
+Запускаем ./api с фильтром Seccomp и ловим отказ ядра (получаем: Bad system call (core dumped))
+systemd-run --user --wait --pipe -p SystemCallFilter=~listen ./api
+
 
 ## Часть 5 — Собери свой Docker
 
