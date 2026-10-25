@@ -1,160 +1,162 @@
-# Lecture 2 — Observability and monitoring
+# Лекция 2 — Наблюдаемость и мониторинг
 
-You can set up containers, the cluster, and networking perfectly, but if you can't see what happens inside, you learn about problems from angry users instead of your own graphs. This lecture answers how "sight" works in Kubernetes: where metrics come from, how to collect logs from all pods, how to trace one request across many services, and — most importantly — what to watch and what to page on. Monitoring comes early in the course — right after Docker: it's mandatory in every later lab, so it runs as a cross-cutting theme. The running example stays the same — the online shop `shop` with services `api` (×3), `worker`, and `postgres`.
-
----
-
-## Block 1. Metrics
-
-### Monitoring vs observability
-
-Two words that get confused. Monitoring: we pick known indicators in advance and set alarms ("CPU above 90% — send an alert"). It answers "is everything OK?" and is good for problems we foresaw. Observability: the broader ability to understand what happens inside a system from the signals it emits, even when the problem is new and unforeseen. It answers "why did this particular thing break?". Monitoring says "the service is unhealthy"; good observability lets you find out why without adding new code for every case. A real system needs both.
-
-### The three pillars
-
-- Metrics — numbers over time (requests per second, latency, memory). Answer WHAT happens and when. Cheap and compact — good for trends and alerts.
-- Logs — text records of application events ("could not connect to the database"). Answer WHY.
-- Traces — the path of one request across many services. Answer WHERE the bottleneck is.
-
-Their power is in the combination. Typical investigation: a metric shows error rate rising in `api` (what) → a trace shows requests stalling on the call to `postgres` (where) → the `postgres` log explains it ran out of connections (why).
-
-### What we want to see in shop
-
-Metrics — load and health of each service and node; logs — what the services write, which errors; cluster events — why a pod didn't start, who got evicted, what restarted; traces — where time is lost when an order is slow.
-
-### What a metric is
-
-A metric is a numeric value measured over time, e.g. "requests per second to `api`": 120 at 10:00, 350 at 13:00. Technically this sequence of "time → value" pairs is a time series. A metric has labels — qualifiers in braces: `http_requests_total{service="api", code="500"}` is the counter of requests to `api` with response code 500. Labels let you slice one metric by service, code, node. Because metrics are cheap and compact (just numbers), you store them for a long time, see week-long trends, and hang alerts on them.
-
-### Prometheus and the pull model
-
-Prometheus is the de facto standard for metrics in Kubernetes. It stores time series and queries them. Its collection model is pull: Prometheus itself periodically (say every 15 s) goes to each target and fetches its metrics. Each target — an app or component — simply exposes an HTTP endpoint (by convention `/metrics`) and serves its current metrics as plain text. Prometheus reads that endpoint — this act is called a scrape. In Kubernetes it also discovers what to scrape via service discovery. The opposite is push (services send metrics themselves). Pull is convenient because Prometheus immediately sees when a target fails to answer (it's down); with push, a silent service is easily confused with a healthy one that simply sends nothing.
-
-### Where metrics come from in Kubernetes
-
-Several sources supply metrics — don't confuse who does what. (`kubelet` is the Kubernetes agent on each node that runs and holds pods.)
-
-- cAdvisor — built into `kubelet`; container metrics: CPU, memory, network per container. This is what `kubectl top pod` shows.
-- node-exporter — metrics of the node as a machine: host CPU, free memory, disk usage, network. Health of the hardware under the cluster.
-- kube-state-metrics — state of Kubernetes objects: how many pods are Running vs Pending, how many restarts, how many replicas a Deployment wants vs has. The main source for whether the cluster-as-orchestrator is healthy.
-- control plane metrics (API server, scheduler, etcd) and `kubelet`.
-- application metrics — what your service exposes on `/metrics`, including business metrics like orders placed.
-
-Cheat sheet: consumption of a specific pod — cAdvisor; node health and disk space — node-exporter; "how many pods are Pending, who's restarting" — kube-state-metrics; business metrics — application metrics.
-
-### A bit of PromQL
-
-PromQL is the query language for Prometheus metrics. Three ideas:
-
-- Select a series by name and labels: `http_requests_total{service="api"}`.
-- `rate(...[5m])` — rate of growth of a counter. Many metrics are counters that only grow from service start and never reset; the raw "5M requests total" tells you nothing. What matters is the rate — requests per second now. `rate` turns "total accumulated" into "per second", and `[5m]` is a smoothing window over the last 5 minutes.
-- Aggregation: `sum by (code) (rate(http_requests_total[5m]))` — sum separately per value of the `code` label, i.e. the rate for 200s and for 500s separately.
-
-Together they give the key health metric — error rate: rate of 5xx requests divided by rate of all requests.
+Можно идеально настроить контейнеры, кластер и сеть — но если не видно, что происходит внутри, о проблемах узнаёшь от разъярённых пользователей, а не от своих графиков. Эта лекция отвечает на вопрос, как устроено «зрение» в мире Kubernetes: откуда берутся метрики, как собирать логи со всех подов, как проследить один запрос через кучу сервисов и — важнее всего — за чем именно следить и по чему будить дежурного. Мониторинг стоит в курсе рано — сразу после Docker: дальше он обязателен в каждой лабе, так что это сквозная тема. Сквозной пример прежний — интернет-магазин `shop` с сервисами `api` (×3), `worker` и `postgres`: на нём разбираем, как увидеть, что с ними происходит.
 
 ---
 
-## Block 2. Logs and events
+## Блок 1. Метрики
 
-### The log's path: why stdout, not a file
+### Мониторинг и наблюдаемость: в чём разница
 
-Container rule: the app writes logs to standard output (`stdout`/`stderr`), not to files inside the container. Reason — the container filesystem is ephemeral (Lecture 1): write a log to a file inside and the container is recreated, taking the log with it. So: the app writes to `stdout` → the node's runtime (here `containerd`) captures it into a file on the node → `kubectl logs` reads that file. That's why `kubectl logs` works and shows only the current pod. But logs on the node aren't eternal either: they rotate (old ones overwritten so the disk doesn't fill), and if the node dies you lose access. So logs must be collected from nodes into a separate, centralized store.
+Два слова, которые часто путают. Мониторинг — это когда мы заранее выбрали показатели и настроили тревоги: «CPU выше 90% — прислать алерт». Он отвечает на вопрос «всё ли в порядке?» и хорош для проблем, которые мы предвидели. Наблюдаемость (observability) — понятие шире: это способность понять, что творится внутри системы, по сигналам, которые она отдаёт наружу, даже когда проблема новая и заранее не предусмотрена. Она отвечает на вопрос «почему сломалось именно вот это?». Разница практическая: мониторинг скажет «сервису плохо», а хорошая наблюдаемость позволит докопаться, почему именно, не добавляя новый код на каждый случай. В реальной системе нужны оба.
 
-### Centralized log collection
+### Три столпа наблюдаемости
 
-You need an agent that collects logs from all nodes into one place. On each node runs a collection agent — as a DaemonSet, a useful object type. Where a Deployment runs some number of replicas anywhere, a DaemonSet guarantees exactly one pod per node — ideal for agents that must be on every machine. The agent reads the log files of all pods on its node and ships them to a central store. Common agents: Fluent Bit, Vector, Promtail; common stores: Loki, Elasticsearch. Result: logs of all pods from all nodes flow into one searchable place, readable even after a pod or whole node dies. Two tools: `kubectl logs` for "look at a live pod right now", centralized collection for history, search, and after-the-fact investigations. In production you need the second.
+Наблюдаемость раскладывают на три типа сигналов, которые дополняют друг друга.
 
-### Structured logs
+- Метрики — числа во времени: сколько запросов в секунду, какая задержка, сколько памяти ест под. Отвечают на вопрос «ЧТО происходит и когда». Дёшевы и компактны, по ним удобно видеть тренды и поднимать тревогу.
+- Логи — текстовые записи о событиях внутри приложения («не смог подключиться к базе, таймаут»). Отвечают на вопрос «ПОЧЕМУ».
+- Трейсы — след одного запроса, прошедшего через много сервисов. Отвечают на вопрос «ГДЕ именно затык».
 
-Two ways to write a log. Plain text: "2026-05-01 db connection error for order 123" — readable to a human, hard for a machine to filter (parsing regexes, brittle). Structured (usually JSON): `{level:"error", msg:"db connection failed", order_id:123}` — same information as fields. The log store can search and aggregate by field: "show all `error` for `order_id=123`", "count errors per endpoint". In large systems structured logs are nearly mandatory — searching by field is far more powerful than by eye. Agree on this with developers early.
+Сила не в каждом по отдельности, а в связке. Типичное расследование: метрика показала, что у `api` выросла доля ошибок (что) → трейс показал, что запросы тормозят на обращении к `postgres` (где) → лог `postgres` объяснил, что кончились соединения (почему).
 
-### Kubernetes events are not logs
+### Что хотим видеть в shop
 
-Events are a separate signal: not what your app writes, but messages from the cluster itself about what it does to your objects. Examples: `FailedScheduling` (pod didn't fit — the Pending state), `OOMKilled` (terminated for exceeding memory), `BackOff` (restarting in a loop — the inside of `CrashLoopBackOff`), `Pulling`/`Pulled` (fetching the image), `Evicted` (evicted under pressure). View with `kubectl describe pod <name>` (Events section at the bottom, for that pod — the first place to look when a pod won't start) or `kubectl get events` for the whole namespace. Key detail: events are short-lived — kept about an hour, then deleted. For after-the-fact investigation, collect them centrally too. Keep the distinction: logs = what the APPLICATION says; events = what the CLUSTER does to it. Investigate both.
+Магазин ставит перед наблюдаемостью конкретные вопросы: по метрикам — нагрузку и здоровье каждого сервиса и нод; по логам — что именно пишут сервисы, какие ошибки; по событиям кластера — почему под не встал, кого выселили, что перезапустилось; по трейсам — где теряется время, когда заказ оформляется медленно.
 
-### Metrics + logs + events together
+### Что такое метрика
 
-On a real incident:
+Метрика — числовой показатель, измеряемый во времени. Например, «запросов в секунду к `api`»: 120 в 10:00, 350 в 13:00. Технически такая последовательность пар «время → значение» называется временной ряд (time series). У метрики есть метки (labels) — уточнения в фигурных скобках: `http_requests_total{service="api", code="500"}` — счётчик запросов именно к `api` именно с кодом 500. Метки позволяют резать одну метрику по сервисам, кодам, нодам. Ключевое свойство метрик: они дёшевы и компактны (это просто числа), поэтому их хранят долго, по ним видят тренды за недели и на них вешают тревоги.
 
-1. Metric: `api`'s 5xx error rate spikes — WHAT and when, but not why.
-2. Events: pod `postgres` shows `OOMKilled` and `BackOff` — the cluster says the DB is restarting for lack of memory.
-3. Logs: `api` logs "timeout connecting to postgres", `postgres` logs "out of memory" — WHY.
+### Prometheus и модель pull
 
-Conclusion: `postgres` hit its memory limit → restarts → `api` can't connect → errors for clients. Fix the `postgres` memory (limit or leak). Diagnosis in three steps, each pillar adding its piece.
+Инструмент номер один для метрик в Kubernetes — Prometheus, фактический стандарт. Он хранит временные ряды и умеет делать по ним запросы. Самое важное — его модель сбора: она называется pull (тянущая). Prometheus сам периодически (скажем, раз в 15 секунд) ходит к каждой цели и забирает у неё метрики. Каждая цель — приложение или компонент — просто выставляет HTTP-адрес (по традиции `/metrics`) и отдаёт там свои текущие метрики обычным текстом. Prometheus заходит на `/metrics` и читает — этот акт называется scrape. В Kubernetes он ещё и сам находит, кого опрашивать, через service discovery — смотрит в кластер и понимает, какие поды и сервисы надо скрейпить. Противоположность — push (сервисы сами шлют метрики). Pull удобен тем, что Prometheus сразу видит, если цель не ответила: значит, она недоступна; в модели push замолчавший сервис легко перепутать с исправным, который просто ничего не шлёт.
 
----
+### Откуда берутся метрики в Kubernetes
 
-## Block 3. Traces, alerts, eBPF
+В кластере метрики поставляют сразу несколько источников — важно не путать, кто за что. Напомним: `kubelet` — агент Kubernetes на каждой ноде, тот, кто запускает и держит поды.
 
-### Why traces
+- cAdvisor — встроен прямо в `kubelet`, отдаёт метрики контейнеров: сколько CPU, памяти и сети ест каждый контейнер. Именно это стоит за командой `kubectl top pod`.
+- node-exporter — метрики самой ноды как машины: загрузка CPU хоста, свободная память, заполненность дисков, сеть. Про здоровье железа под кластером.
+- kube-state-metrics — состояние объектов Kubernetes: сколько подов в Running, сколько застряло в Pending, сколько было рестартов, сколько реплик у Deployment хочется и сколько доступно. Главный источник, чтобы видеть, здоров ли кластер как оркестратор.
+- метрики control plane (API-сервер, scheduler, etcd) и `kubelet`.
+- метрики приложения — то, что сервис сам отдаёт на `/metrics`, включая бизнес-показатели вроде числа оформленных заказов.
 
-One client request crosses many services (`api → worker → postgres → ...`). The client says "slow" — but where exactly? Metrics show "slow on average", not for a specific request. Logs of each service show fragments, but reassembling one request's path by hand is nearly impossible at scale. Distributed tracing solves this: it shows one specific request's path across the whole chain and how much time it spent at each step. Literally visible: `api` — 5 ms, `worker` — 10 ms, the `postgres` call — 800 ms — there's the culprit.
+Шпаргалка «куда смотреть»: потребление конкретного пода — cAdvisor; здоровье ноды и место на диске — node-exporter; «сколько подов в Pending, кто рестартует» — kube-state-metrics; бизнес-показатели — метрики приложения.
 
-### How a trace works: trace and span
+### Немного PromQL
 
-- span — one unit of work (e.g. "processing in `api`" or "query to `postgres`"): start, end, duration.
-- trace — the whole path of one request, a tree of linked spans.
+PromQL — язык запросов к метрикам Prometheus. Три идеи.
 
-How they link into one tree across different services and nodes: the first request is assigned a unique trace-id, which is passed down the chain, usually in HTTP headers — this is context propagation. Each service sees the trace-id, adds its spans under the same id, and forwards it; the tracing system assembles all spans with one trace-id into a tree. For this to work, apps must forward the headers — which requires instrumenting the code: adding a library that creates spans around operations and propagates the trace-id. Usually not rewriting logic, just a library plus a few lines of config. A service mesh (covered later in the course) helps partially — it sees inter-service calls and can add basic spans at service boundaries with no code — but detail inside a service (which functions, which DB queries) comes only from instrumenting the code; the mesh doesn't look inside a service.
+- Выбрать ряд по имени и меткам: `http_requests_total{service="api"}` — «покажи мне вот эту метрику вот с такой меткой».
+- `rate(...[5m])` — скорость роста счётчика. Многие метрики устроены как счётчик, который только растёт от старта сервиса и никогда не сбрасывается; само число «всего было 5 млн запросов» ни о чём не говорит. Интересна скорость — сколько запросов в секунду сейчас. `rate` переводит «всего накопилось» в «столько в секунду», а `[5m]` — окно усреднения за последние 5 минут, чтобы сгладить случайные скачки.
+- Агрегация (группировка): `sum by (code) (rate(http_requests_total[5m]))` — «сложи, но раздельно по каждому значению метки `code`», то есть скорость отдельно для 200-х и отдельно для 500-х.
 
-### OpenTelemetry and Jaeger
-
-- OpenTelemetry (OTel) — an open standard and set of libraries for observability in general: a uniform way to collect and transmit metrics, logs, traces. It ended the zoo of formats where switching monitoring systems meant re-instrumenting every service. Instrument once to the standard, then send to any compatible system.
-- Jaeger — a popular system for storing and viewing traces. It shows the span tree with durations: open a slow request and see where the time went.
-
-In practice: instrument with OpenTelemetry, traces go to Jaeger, metrics to Prometheus, logs to Loki — all linked.
-
-### Golden signals: what to watch
-
-You can gather thousands of metrics and drown. What first? The proven answer from Google's SRE (Site Reliability Engineering) team — four golden signals:
-
-- Latency — how long a request takes (separately for successful and failed; fast errors can mask slow success).
-- Traffic — requests per second.
-- Errors — fraction of failed requests.
-- Saturation — how full your resources are (memory, CPU, disk — how close to the limit).
-
-Starting observability for a new service, begin with exactly these four and add specifics later.
-
-### Alerts: page on symptoms, not causes
-
-Main principle: page a human on what actually hurts the user (a symptom), not on every internal cause.
-
-- Good: "`api` error rate > 5% for five minutes", "order latency > 2 s" — the user is hurting now; worth a night call.
-- Bad: "node CPU 90%" on its own — maybe the service runs fine at 90%; you wake someone for nothing. Cause metrics like CPU help investigation but are a path to burnout as page triggers.
-
-A good threshold reference is an SLO (service level objective), e.g. "99.9% of requests succeed": alert when you risk breaching it — a real threat to the user, not an abstract number.
-
-### Alert fatigue
-
-Alert fatigue — so many alerts, mostly false, that people stop reacting, mute notifications, and miss the real incident in the noise. Paradox: too much monitoring makes a system less observable because signals lose trust. How to fight it:
-
-- Every alert must require action; if you do nothing on it, delete it.
-- Fewer alerts, but meaningful; group related ones so one incident doesn't flood you; fix or remove noisy ones.
-- Every alert should carry a clear "what to do", at least a runbook link.
-
-Good observability is not "more alerts", it's "you're paged only when it truly matters".
-
-### eBPF in observability
-
-eBPF — a mechanism that safely runs small programs inside the Linux kernel — gives observability without changing application code.
-
-- Kernel programs see syscalls, network connections, latencies — across all processes on a node at once.
-- You can get metrics and often traces automatically, without instrumenting each service by hand.
-- Tools: Pixie, Cilium/Hubble (network), Parca (profiling — what a process spends CPU and memory on, down to specific functions).
-
-eBPF doesn't fully replace application observability — business metrics like orders placed are known only to the app; the kernel knows nothing of them. But it drastically lowers the barrier: instead of instrumenting every service for basic visibility, it's largely "turn it on and see".
+Всё вместе даёт главный показатель здоровья — долю ошибок: скорость запросов с кодом 5xx делим на скорость всех запросов. Это то, на что смотрят каждый день.
 
 ---
 
-## Summary
+## Блок 2. Логи и события
 
-- Three pillars: metrics (what), logs (why), traces (where) — strong in combination.
-- Metrics: Prometheus pulls (scrapes `/metrics`, discovers targets); sources — cAdvisor (containers), node-exporter (node), kube-state-metrics (k8s objects), control plane, application; PromQL: `rate()` for counters and error rate.
-- Logs to `stdout` (ephemeral container FS) → node runtime → centralized collection by a DaemonSet agent into Loki/Elasticsearch; structured (JSON) logs are searchable by field.
-- Kubernetes events ≠ logs: what the CLUSTER does (`OOMKilled`, `FailedScheduling`); short-lived, collect them too.
-- Traces: spans under a shared trace-id, context propagation; standard — OpenTelemetry, viewer — Jaeger.
-- Practice: golden signals (latency, traffic, errors, saturation); alert on symptoms and SLO risk, not causes; fight alert fatigue; eBPF lowers the barrier.
+### Путь лога: почему в stdout, а не в файл
 
-Next we move up into orchestration — how Kubernetes runs all this, starting with the control plane.
+Правило контейнеров: приложение пишет логи в стандартный вывод (`stdout`/`stderr`), а не в файлы внутри контейнера. Причина — файловая система контейнера эфемерна (лекция 1): напишешь лог в файл внутри — контейнер пересоздался, и лог исчез вместе с ним. Дальше происходит вот что: приложение пишет в `stdout` → рантайм на ноде (у нас `containerd`) перехватывает вывод и складывает в файл уже на ноде → команда `kubectl logs` читает этот файл и показывает. Поэтому `kubectl logs` работает и показывает только текущий под. Но и на ноде логи не вечны: они ротируются (старые затираются, чтобы не забить диск), а если нода умерла — доступ потерян. Значит, логи надо собирать с нод в отдельное централизованное хранилище.
 
-> Lab: set up metrics, logs and traces for your service and configure 3 alerts — see [lab.md](lab.md).
+### Централизованный сбор логов
+
+Нужен агент, который собирает логи со всех нод в одно место. Устроено так: на каждой ноде запускается агент сбора — и тут появляется полезный тип объекта, DaemonSet. Если Deployment запускает нужное число реплик где попало, то DaemonSet гарантирует ровно по одному поду на каждой ноде — идеально для агентов, которым надо быть на каждой машине. Агент читает файлы логов всех подов своей ноды и отправляет их в центральное хранилище. Популярные агенты — Fluent Bit, Vector, Promtail; популярные хранилища — Loki, Elasticsearch. В итоге логи всех подов со всех нод стекаются в одно место, где по ним можно искать и читать даже после того, как под или целая нода умерли. Разделите два инструмента: `kubectl logs` — для «посмотреть прямо сейчас на живой под», централизованный сбор — для истории, поиска и расследований задним числом. В проде без второго нельзя.
+
+### Структурированные логи
+
+Два способа писать лог. Обычный текст: «2026-05-01 ошибка подключения к базе для заказа 123» — человеку читаемо, а машине трудно фильтровать (приходится парсить регулярками, хрупко). Структурированный (обычно JSON): `{level:"error", msg:"db connection failed", order_id:123}` — та же информация полями. Выглядит менее нарядно, зато хранилище логов может искать и агрегировать по полям: «покажи все `error` по `order_id=123`», «посчитай ошибки по каждому эндпоинту». В больших системах структурированные логи почти обязательны — искать по полям несравнимо мощнее, чем глазами по тексту. Это то, о чём стоит договориться с разработчиками на старте.
+
+### События Kubernetes — это не логи
+
+События (Events) — отдельный сигнал: это не то, что пишет приложение, а сообщения самого кластера о том, что он делает с объектами. Примеры: `FailedScheduling` (под не влез — состояние Pending), `OOMKilled` (завершён за превышение памяти), `BackOff` (перезапуск по кругу — внутренность `CrashLoopBackOff`), `Pulling`/`Pulled` (тянет образ), `Evicted` (выселен под давлением). Смотрят двумя способами: `kubectl describe pod <имя>` (внизу вывода раздел Events именно про этот под — первое, куда смотреть, когда под не поднимается) или `kubectl get events` по всему namespace. Критичная деталь: события недолговечны — хранятся около часа и удаляются. Для разбора инцидентов задним числом их тоже надо собирать в централизованное хранилище. Держите различие: логи — что говорит ПРИЛОЖЕНИЕ, события — что делает с ним КЛАСТЕР. При расследовании смотреть надо и туда, и туда.
+
+### Метрики + логи + события вместе
+
+Как это работает в связке на реальном инциденте.
+
+1. Метрика: у `api` резко подскочила доля ошибок 5xx — видим ЧТО и когда, но не почему.
+2. События: у пода `postgres` — `OOMKilled` и `BackOff`, кластер говорит, что база перезапускается из-за нехватки памяти.
+3. Логи: в логах `api` — «timeout connecting to postgres», в логах `postgres` — «out of memory» — видим ПОЧЕМУ.
+
+Вывод: `postgres` упёрся в лимит памяти → перезапуски → `api` не может подключиться → ошибки у клиентов. Чинить понятно что — память `postgres`, лимит или утечка. Диагноз за три шага, каждый столп добавил свой кусок. Ради таких расследований наблюдаемость и строят.
+
+---
+
+## Блок 3. Трейсы, алерты, eBPF
+
+### Зачем трейсы
+
+Один запрос клиента проходит через много сервисов (`api → worker → postgres → ...`). Клиент жалуется, что «медленно» — а где именно? По метрикам видно, что «в среднем медленно», но не для конкретного запроса. По логам каждого сервиса видны кусочки, но собрать их в единый путь одного запроса вручную почти нереально, особенно когда запросов тысячи. Это решает распределённая трассировка (distributed tracing): она показывает путь одного конкретного запроса через всю цепочку и сколько времени он провёл на каждом шаге. Буквально видно: `api` — 5 мс, `worker` — 10 мс, а запрос в `postgres` занял 800 мс — вот виновник.
+
+### Как устроен трейс: trace и span
+
+- span — один отрезок работы (например, «обработка в `api`» или «запрос в `postgres`»): начало, конец, длительность.
+- trace — весь путь одного запроса целиком, то есть дерево связанных span'ов.
+
+Как они связываются в одно дерево, хотя проходят через разные сервисы на разных нодах: при приходе первого запроса ему присваивают уникальный идентификатор — trace-id. Дальше он передаётся по всей цепочке, обычно в HTTP-заголовках — это называется context propagation (проброс контекста). Каждый следующий сервис видит trace-id, добавляет свои span'ы под тем же идентификатором и прокидывает его дальше; система трассировки собирает все span'ы с одним trace-id в единое дерево. Чтобы это заработало, приложения должны прокидывать заголовки — а для этого код надо инструментировать: добавить в сервис специальную библиотеку, которая сама создаёт span'ы вокруг операций и прокидывает trace-id дальше. Обычно это не переписывание логики, а подключение готовой библиотеки и пара строк настройки. Частично помогает service mesh (о нём — дальше в курсе): он видит межсервисные вызовы и может проставить базовые span'ы на границах сервисов сам, без вашего кода; но детализацию внутри сервиса (какие функции, какие запросы к базе) даёт только инструментирование самого кода — mesh внутрь сервиса не заглядывает.
+
+### OpenTelemetry и Jaeger
+
+- OpenTelemetry (OTel) — открытый стандарт и набор библиотек для наблюдаемости в целом: как единообразно собирать и передавать метрики, логи, трейсы. Появился, чтобы покончить с зоопарком форматов: раньше под каждую систему был свой формат, и сменить систему мониторинга означало переписать инструментирование во всех сервисах. С OpenTelemetry инструментируешь код один раз по стандарту — и шлёшь данные в любую совместимую систему. Это магистральное направление.
+- Jaeger — популярная система для хранения и просмотра именно трейсов. Показывает то самое дерево span'ов с длительностями: открываешь медленный запрос и видишь, на каком шаге ушло время.
+
+Связка на практике: инструментируешь сервисы по OpenTelemetry, трейсы уходят в Jaeger, метрики — в Prometheus, логи — в Loki, и всё это связано.
+
+### Золотые сигналы: за чем следить
+
+Метрик можно насобирать тысячи и утонуть. За чем следить в первую очередь? Проверенный ответ от команды SRE в Google (Site Reliability Engineering — инженеры по надёжности) — четыре золотых сигнала:
+
+- Latency — задержка: сколько занимает запрос (отдельно для успешных и ошибочных, потому что быстрые ошибки могут маскировать медленный успех).
+- Traffic — нагрузка: сколько запросов в секунду.
+- Errors — ошибки: доля неуспешных запросов.
+- Saturation — насыщение: насколько загружены ресурсы (память, CPU, диск — близко ли к пределу).
+
+Когда заводишь новый сервис и не знаешь, с чего начать наблюдаемость, — начни ровно с этих четырёх, а специфику добавишь потом.
+
+### Алерты: будить по симптомам, а не по причинам
+
+Главный принцип алертинга: будить человека надо по тому, что реально бьёт по пользователю (симптом), а не по каждой внутренней причине.
+
+- Хорошо: «доля ошибок `api` > 5% пять минут», «задержка оформления заказа > 2 сек» — пользователю плохо прямо сейчас, это стоит ночного звонка.
+- Плохо: «CPU на ноде 90%» само по себе — может, сервис прекрасно работает и на 90%, разбудите человека зря. Причинные метрики вроде CPU полезны для расследования, но будить по ним — путь к выгоранию.
+
+Хороший ориентир для порогов — SLO (service level objective, цель по надёжности): например, «99,9% запросов должны быть успешны». Тогда алерт срабатывает, когда рискуешь эту цель нарушить, — по реальной угрозе пользователю, а не по абстрактному числу.
+
+### Усталость от алертов
+
+Alert fatigue (усталость от алертов) — когда алертов так много и большинство ложные, что на них перестают реагировать, отключают уведомления и в этом шуме пропускают настоящий инцидент. Парадокс: слишком много мониторинга делает систему менее наблюдаемой, потому что сигналам перестают верить. Как бороться:
+
+- Каждый алерт должен требовать действия; если на алерт «ничего не делаем» — он не нужен, убери его.
+- Меньше алертов, но по делу; связанные — группировать, чтобы один инцидент не заваливал сотней уведомлений; шумные — безжалостно чинить или удалять.
+- Каждый алерт должен нести понятное «что делать», хотя бы ссылку на инструкцию; алерт без этого бесполезен.
+
+Хорошая наблюдаемость — это не «побольше алертов», а «будят только когда правда надо».
+
+### eBPF в наблюдаемости
+
+eBPF — механизм, который позволяет безопасно запускать небольшие программы прямо в ядре Linux; для наблюдаемости это даёт видимость без изменения кода приложений.
+
+- Программы в ядре видят системные вызовы, сетевые соединения, задержки — по всем процессам на ноде разом.
+- Можно автоматически получать метрики и во многих случаях трейсы, не инструментируя каждый сервис руками.
+- Инструменты: Pixie, Cilium/Hubble (сеть), Parca (профилирование — смотрят, на что процесс тратит CPU и память вплоть до конкретных функций).
+
+eBPF не заменяет прикладную наблюдаемость полностью — бизнес-показатели вроде числа заказов знает только само приложение, ядро про них ничего не понимает. Но eBPF резко снижает порог входа: раньше для базовой видимости надо было инструментировать все сервисы, а теперь во многом «включил — и видишь».
+
+---
+
+## Итог
+
+- Три столпа: метрики (что), логи (почему), трейсы (где) — сильны в связке.
+- Метрики: Prometheus по модели pull (сам скрейпит `/metrics`, сам находит цели); источники — cAdvisor (контейнеры), node-exporter (нода), kube-state-metrics (объекты k8s), control plane, приложение; PromQL: `rate()` для счётчиков и доля ошибок.
+- Логи пишут в `stdout` (ФС контейнера эфемерна) → рантайм на ноде → централизованный сбор агентом-DaemonSet в Loki/Elasticsearch; структурированные (JSON) логи ищутся по полям.
+- События Kubernetes ≠ логи: что делает КЛАСТЕР (`OOMKilled`, `FailedScheduling`); недолговечны, тоже собирают.
+- Трейсы: span'ы под общим trace-id, context propagation; стандарт — OpenTelemetry, просмотр — Jaeger.
+- Практика: золотые сигналы (latency, traffic, errors, saturation); алерты по симптомам и риску нарушить SLO, а не по причинам; борьба с alert fatigue; eBPF снижает порог входа.
+
+Дальше поднимаемся в оркестрацию — как Kubernetes всем этим управляет, начиная с control plane.
+
+> Лаба: подними метрики, логи и трейсы для своего сервиса и настрой 3 алерта — см. [lab.md](lab.md).
