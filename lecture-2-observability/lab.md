@@ -1,78 +1,70 @@
-# Lab 2 — Service monitoring: metrics, logs, traces
+Лаба 2 — Мониторинг сервиса: метрики, логи, трейсы
+Ситуация
 
-## Situation
+Нужно поднять полный мониторинг одного сервиса: метрики, логи и трейсы. Метрики и логи смотришь в Grafana, трейсы — в Jaeger, алерты — в Alertmanager. Этот стек ты соберёшь один раз: дальше мониторинг обязателен в каждой лабе, и переиспользовать будешь его же.
 
-You need to set up full monitoring of one service: metrics, logs, and traces. You view metrics and logs in Grafana, traces in Jaeger, alerts in Alertmanager. You build this stack once: from here on monitoring is mandatory in every lab, and you'll reuse the same stack.
+Сам сервис может быть любым — свой или сгенерированный, на оценку он не влияет. Оценивается мониторинг вокруг него.
+Часть 0 — Свой сервис
 
-The service itself can be anything — your own or generated; it doesn't affect the grade. What's graded is the monitoring around it.
+Напиши сервис — свой или сгенерированный, реализация на оценку не влияет. Нужен HTTP-сервис api с эндпоинтами, чтобы самому провоцировать ситуации:
 
-## Part 0 — Your service
+    GET /health — возвращает ok;
+    GET /fail — возвращает ошибку 5xx и увеличивает счётчик ошибок;
+    GET /slow — отвечает медленно (спит 1–3 секунды);
+    GET /load — делает пачку запросов к себе, чтобы подскочил RPS.
 
-Write a service — your own or generated; the implementation doesn't affect the grade. You need an HTTP service `api` with endpoints to trigger situations yourself:
+Сервис должен:
 
-- `GET /health` — returns `ok`;
-- `GET /fail` — returns a 5xx error and increments the error counter;
-- `GET /slow` — responds slowly (sleeps 1–3 seconds);
-- `GET /load` — fires a burst of requests at itself to spike RPS.
+    отдавать метрики Prometheus на /metrics: счётчик запросов, счётчик ошибок, гистограмму времени ответа (RED);
+    писать структурированные логи в JSON с trace_id текущего запроса;
+    быть инструментирован OpenTelemetry для трейсов (см. часть 3);
+    иметь Dockerfile.
 
-The service must:
+Работаем только в Kubernetes: подними локальный кластер (minikube, kind или другую инсталляцию) и весь стек разворачивай через Helm. Других вариантов (docker compose и подобное) в этой лабе не используем.
+Часть 1 — Метрики (Prometheus + Grafana)
 
-- expose Prometheus metrics at `/metrics`: request counter, error counter, response-time histogram (RED);
-- write structured JSON logs with the current request's `trace_id`;
-- be instrumented with OpenTelemetry for traces (see Part 3);
-- have a Dockerfile.
+Подними Prometheus и настрой scrape /metrics сервиса. Подними Grafana, подключи Prometheus как источник. Собери дашборд по RED: интенсивность запросов, доля ошибок, p95 времени ответа. Понажимай /load, /fail, /slow и убедись, что графики реагируют.
+Часть 2 — Логи (Loki + Grafana)
 
-Work only in Kubernetes: bring up a local cluster (minikube, kind, or another installation) and deploy the whole stack via Helm. Other options (docker compose and the like) are not used in this lab.
+Сначала пойми разделение ролей: Loki — это хранилище логов, сам он ниоткуда логи не забирает. Собирает вывод подов и отправляет его в Loki отдельный агент, который ставится на каждую ноду, — например Grafana Alloy, Promtail или Fluent Bit. То есть нужно поднять и Loki, и такой агент-сборщик.
 
-## Part 1 — Metrics (Prometheus + Grafana)
+Подними Loki и агент сбора, настрой сбор логов сервиса и подключи Loki к той же Grafana, чтобы метрики и логи были в одном окне. Дёрни /fail и найди эту ошибку в логах.
+Часть 3 — Трейсы (OpenTelemetry + Jaeger)
 
-Bring up Prometheus and configure scraping of the service's `/metrics`. Bring up Grafana and add Prometheus as a data source. Build a RED dashboard: request rate, error rate, p95 response time. Hit `/load`, `/fail`, `/slow` and confirm the graphs react.
+Трейс — это путь одного запроса через сервис (а в больших системах — через всю цепочку сервисов), собранный из отрезков-спанов. У каждого спана есть имя, начало, конец и длительность, а вложенные спаны показывают, из чего сложилось общее время. Трейсинг отвечает на вопрос «на каком шаге ушло время», когда по метрикам видно «где-то медленно», а где именно — непонятно.
 
-## Part 2 — Logs (Loki + Grafana)
+Инструментируй сервис через OpenTelemetry: подключается готовая библиотека, которая на каждый входящий запрос сама создаёт корневой спан. В обработчике /slow оберни медленную операцию в отдельный вложенный спан (например, slow-op), чтобы в водопаде было видно, что время ушло именно туда. В обработчике /fail помечай спан как ошибочный (status = error) — Jaeger подсветит его красным. В каждый лог проставляй trace_id текущего спана: так строка лога и трейс связываются, и от лога можно перейти к трейсу.
 
-First understand the separation of roles: Loki is a log store — it does not pull logs from anywhere itself. A separate agent, installed on every node, reads pod output and ships it to Loki — for example Grafana Alloy, Promtail, or Fluent Bit. So you bring up both Loki and such a collector agent.
+Подними Jaeger (проще всего all-in-one) и направь на него OTLP-экспортёр сервиса (адрес обычно задаётся переменной OTEL_EXPORTER_OTLP_ENDPOINT). В Jaeger UI выбери свой сервис и найди: трейс запроса /slow — в водопаде виден длинный вложенный спан; трейс /fail — с красным ошибочным спаном. Возьми trace_id из лога в Grafana и найди по нему тот же трейс в Jaeger.
+Часть 4 — Алерты (Alertmanager + Karma)
 
-Bring up Loki and the collector agent, configure log collection for the service, and connect Loki to the same Grafana so metrics and logs are in one place. Hit `/fail` and find that error in the logs.
+Опиши правила алертов в Prometheus на PromQL и подключи к нему Alertmanager — компонент, который принимает сработавшие алерты, группирует их и рассылает получателям. Настрой хотя бы одного получателя (webhook, почта, Slack — что удобно, лишь бы срабатывание было видно).
 
-## Part 3 — Traces (OpenTelemetry + Jaeger)
+Придумай 3 действительно критичных алерта — такие, по которым на настоящем проекте пришлось бы реально среагировать, а не просто «загорелся жёлтый график». Отталкивайся от боли пользователя и здоровья сервиса: например, доля ошибок выше порога несколько минут подряд; p95 времени ответа выше допустимого; сервис не отвечает вовсе. Для каждого объясни в отчёте, что он ловит, почему это важно и что по нему делать дежурному. Спровоцируй срабатывания кнопками (/fail, /load, /slow) и покажи алерты в состоянии firing.
 
-A trace is the path of a single request through the service (and, in large systems, through the whole chain of services), assembled from segments called spans. Each span has a name, a start, an end, and a duration, and nested spans show what the total time was made of. Tracing answers the question "which step ate the time" when metrics show "something is slow" but not where exactly.
+Поверх Alertmanager подними Karma — веб-дашборд, который показывает все активные алерты в одном окне, с группировкой и фильтрами. Штатный интерфейс Alertmanager для этого бедноват, а Karma удобна, когда алертов становится много и за ними надо наблюдать вживую. Посмотри свои сработавшие алерты в Karma.
+Результат
 
-Instrument the service with OpenTelemetry: you wire in a ready library that automatically creates a root span for each incoming request. In the `/slow` handler, wrap the slow operation in a separate nested span (e.g. `slow-op`) so the waterfall shows the time went exactly there. In the `/fail` handler, mark the span as failed (status = error) — Jaeger highlights it red. Put the current span's `trace_id` into every log line: that links the log and the trace, so you can jump from a log line to its trace.
+Что должно получиться в итоге — единый стек мониторинга в Kubernetes, всё поднято через Helm:
 
-Bring up Jaeger (all-in-one is easiest) and point the service's OTLP exporter at it (the address is usually set via `OTEL_EXPORTER_OTLP_ENDPOINT`). In the Jaeger UI, select your service and find: the trace of a `/slow` request — the waterfall shows a long nested span; the `/fail` trace — with a red, failed span. Take a `trace_id` from a log in Grafana and find the same trace by it in Jaeger.
+    в кластере крутится сервис api: отдаёт /metrics, пишет логи в stdout, инструментирован трейсами;
+    Prometheus скрейпит /metrics и хранит метрики;
+    Loki хранит логи, а агент-сборщик (Alloy / Promtail / Fluent Bit) на каждой ноде шлёт в него вывод подов;
+    Jaeger принимает трейсы по OTLP и показывает водопад запросов;
+    Grafana подключена к Prometheus и Loki: в ней дашборд по RED и поиск по логам в одном окне;
+    Alertmanager принимает алерты от Prometheus и рассылает получателю;
+    Karma показывает активные алерты в отдельном дашборде.
 
-## Part 4 — Alerts (Alertmanager + Karma)
+Всё связано — проверяешь так: жмёшь /load, /fail, /slow → на дашборде RED реагируют графики; в Grafana находится лог ошибки; в Jaeger виден трейс с медленным и с ошибочным спаном; по трём критичным правилам алерты уходят в firing и видны в Alertmanager и Karma. По trace_id из строки лога открывается тот же трейс в Jaeger.
+Что сдать
 
-Describe alert rules in Prometheus in PromQL and connect Alertmanager to it — the component that receives fired alerts, groups them, and routes them to receivers. Configure at least one receiver (webhook, email, Slack — whatever is convenient, as long as firing is visible).
+    Код сервиса api с Dockerfile (реализация любая, на оценку не влияет).
+    Конфиги стека: Prometheus с правилами алертов, Alertmanager, Karma, Grafana, Loki и агент сбора логов, Jaeger/OTel — всё в виде Helm-конфигурации.
+    README.md — отчёт о проделанной работе в общей форме.
+    Скриншоты: дашборд RED в Grafana; логи в Grafana; водопад трейса в Jaeger (для /slow и /fail); сработавшие алерты в Alertmanager и Karma.
 
-Come up with 3 **genuinely critical** alerts — the kind you'd actually have to react to on a real project, not just "a yellow graph lit up". Start from user pain and service health: e.g. error rate above a threshold for several minutes in a row; p95 response time above the acceptable level; the service not responding at all. For each, explain in the report what it catches, why it matters, and what the on-call should do about it. Trigger them with the buttons (`/fail`, `/load`, `/slow`) and show the alerts in the firing state.
+Как начать
 
-On top of Alertmanager bring up Karma — a web dashboard that shows all active alerts in one place, with grouping and filters. Alertmanager's built-in UI is thin for this, and Karma is handy once there are many alerts to watch live. Look at your fired alerts in Karma.
+Открой репозиторий с AI-ассистентом и попроси помочь с Лабой 2. Сервис можно написать самому или сгенерировать — на оценку это не влияет, фокус лабы на мониторинге. А сам мониторинг (Prometheus, Grafana, Loki, Jaeger, Alertmanager, Karma) ассистент поведёт по шагам и проверит понимание, готовое решение по стеку не выдаст.
 
-## Result
-
-What you should end up with — a single monitoring stack in Kubernetes, all deployed via Helm:
-
-- the `api` service runs in the cluster: exposes `/metrics`, writes logs to stdout, is instrumented with traces;
-- Prometheus scrapes `/metrics` and stores metrics;
-- Loki stores logs, and a collector agent (Alloy / Promtail / Fluent Bit) on each node ships pod output to it;
-- Jaeger receives traces over OTLP and shows the request waterfall;
-- Grafana is connected to Prometheus and Loki: it has the RED dashboard and log search in one place;
-- Alertmanager receives alerts from Prometheus and routes them to a receiver;
-- Karma shows the active alerts in a separate dashboard.
-
-Everything is wired up — you check it like this: hit `/load`, `/fail`, `/slow` → the RED dashboard graphs react; the error log shows up in Grafana; Jaeger shows a trace with a slow and a failed span; the three critical rules fire and appear in Alertmanager and Karma. A `trace_id` from a log line opens the same trace in Jaeger.
-
-## What to submit
-
-- The `api` service code with a Dockerfile (any implementation, doesn't affect the grade).
-- Stack configs: Prometheus with alert rules, Alertmanager, Karma, Grafana, Loki and the log collector agent, Jaeger/OTel — all as Helm configuration.
-- `README.md` — a report on the work done, in general form.
-- Screenshots: the RED dashboard in Grafana; logs in Grafana; a trace waterfall in Jaeger (for `/slow` and `/fail`); fired alerts in Alertmanager and Karma.
-
-## How to start
-
-Open the repository with an AI assistant and ask for help with Lab 2. You can write the service yourself or generate it — that doesn't affect the grade; the focus of the lab is monitoring. The monitoring itself (Prometheus, Grafana, Loki, Jaeger, Alertmanager, Karma) the assistant will walk you through step by step and check your understanding; it won't hand over a ready stack solution.
-
-> Using AI? Make sure the assistant follows the rules in [`AGENTS.md`](../AGENTS.md). Most tools pick it up automatically; if not, point it at the file.
+    Пользуешься AI? Проверь, что ассистент следует правилам из AGENTS.md. Большинство инструментов подхватывают его сами; если нет — укажи ему на этот файл.
