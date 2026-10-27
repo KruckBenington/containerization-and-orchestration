@@ -1,90 +1,90 @@
-# Lab 3 — Build a platform for shop
+# Лаба 3 — Собери платформу для shop
 
-> **New to Kubernetes?** Work through [Lens](https://k8slens.dev/) — a graphical interface for the cluster that makes pod state, reconciliation, and failures much easier to see than plain `kubectl`.
+> **Плохо знаком с кубером?** Работай через [Lens](https://k8slens.dev/) — это графический интерфейс для кластера, с ним состояние подов, реконсиляция и падения намного нагляднее, чем через голый `kubectl`.
 
-## Situation
+## Ситуация
 
-In a real cluster, anyone can deploy a service with no resource limits, an untrusted image, or missing labels — and it quietly reaches production, because nobody reviews every YAML by hand. A database needs manual operational routine — provisioning, recovering after a pod failure — work that falls on an engineer instead of the system. And when the control plane goes down, nobody knows in advance what actually stops and what keeps running — that gets discovered during the incident.
+В реальном кластере кто угодно может задеплоить сервис без лимитов ресурсов, с чужим образом или без нужных меток — и это тихо доедет до прода, потому что никто не проверяет вручную каждый YAML. База данных требует ручной эксплуатационной рутины — разворачивание, восстановление после сбоя пода — этим приходится заниматься инженеру, а не системе. А когда падает control plane, никто заранее не знает, что из приложения упадёт, а что продолжит работать, — это выясняют уже во время инцидента.
 
-This lab closes all three problems at once. First you set guardrails with policy — the cluster physically refuses deploys that break the rules, so nobody has to review every YAML by hand. Then you write a Helm chart for `shop` (`api`, `worker`, `postgres`) that complies with those guardrails, and you bring up `postgres` through an operator that takes over operating the database. And on a live cluster you check by hand what survives a control plane failure.
+Эта лаба закрывает все три проблемы разом. Сначала ты задаёшь ограждения политикой — кластер физически не принимает нарушающие правила деплои, и ревьюить каждый YAML руками не нужно. Затем пишешь Helm-чарт для `shop` (`api`, `worker`, `postgres`), который соответствует этим ограждениям, а `postgres` заводишь через оператора, который берёт эксплуатацию базы на себя. И на живом кластере проверяешь руками, что переживает падение control plane.
 
-Everything runs locally and for free: kind, k3d, or minikube — no cloud. Writing `api` and `worker` isn't graded.
+Всё выполняется локально и бесплатно: kind, k3d или minikube, без облака. Написание `api` и `worker` не оценивается.
 
-## Part 0 — Services
+## Часть 0 — Сервисы
 
-Generate `api` and `worker`:
+Сгенерируй `api` и `worker`:
 
-- `api` — an HTTP service with endpoints:
-  - `GET /health` — returns `ok`, but returns a 5xx instead when an env var (e.g. `HEALTH_FAIL=true`) is set — you'll need this in Part 2;
-  - `POST /order` — writes an order to `postgres`;
-  - `GET /orders` — reads and returns the list of orders;
-- `worker` — reads orders from `postgres` and marks them processed.
+- `api` — HTTP-сервис с эндпоинтами:
+  - `GET /health` — возвращает `ok`, но при выставленной переменной окружения (например, `HEALTH_FAIL=true`) отвечает 5xx — понадобится в Части 2;
+  - `POST /order` — пишет заказ в `postgres`;
+  - `GET /orders` — читает и отдаёт список заказов;
+- `worker` — читает заказы из `postgres` и помечает обработанными.
 
-## Part 1 — Guardrails for the cluster
+## Часть 1 — Ограждения на кластер
 
-Pick one policy engine and justify it in the README:
+Выбери один движок политик и обоснуй в README:
 
-- **Kyverno** — rules as ordinary Kubernetes manifests, a lower entry bar, lighter for a local cluster;
-- **OPA / Gatekeeper** — rules in Rego, more powerful and flexible, but requires learning it.
+- **Kyverno** — правила как обычные Kubernetes-манифесты, порог входа ниже, легче для локального кластера;
+- **OPA / Gatekeeper** — правила на Rego, мощнее и гибче, но требует его освоить.
 
-Describe at least five cluster-wide rules: for example, mandatory resource limits, images only from a trusted registry, mandatory labels, no privileged containers, and so on. For each, explain in the README what it's good for.
+Опиши не меньше пяти правил на весь кластер: например обязательные лимиты ресурсов, только доверенный реестр образов, обязательные метки, запрет privileged-контейнеров и так далее. Для каждого поясни в README, в чём его польза.
 
-Prepare 5 raw manifests, each breaking one rule (no limits, an untrusted image, no labels, privileged, and one of your own), and show that they're rejected.
+Подготовь 5 сырых манифестов, каждый нарушает одно правило (без лимитов, чужой образ, без меток, privileged, и свой), и покажи, что они отклоняются.
 
-## Part 2 — Chart for api and worker
+## Часть 2 — Чарт api и worker
 
-Write `Chart.yaml`, `values.yaml`, and `Deployment`/`Service` templates for `api` (replicas from `values`, 3 by default) and `worker` (2 by default), with readiness and liveness probes on `/health`. Bake in from the start what the rules from Part 1 require.
+Напиши `Chart.yaml`, `values.yaml` и шаблоны `Deployment`/`Service` для `api` (реплики — из `values`, по умолчанию 3) и `worker` (по умолчанию 2), с readiness- и liveness-пробами на `/health`. Сразу заложи в шаблоны то, что требуют правила из Части 1.
 
-Install the chart. If a template doesn't comply with a rule, the install fails with a policy error — fix it and get a clean install.
+Установи чарт. Если что-то в шаблоне не соответствует правилам — установка упадёт с ошибкой политики; поправь и добейся чистой установки.
 
-Check reconciliation on your chart:
+Проверь на своём чарте reconciliation:
 
-- delete the `api` pod by hand → it comes back;
-- change `replicas` in `values.yaml`, run `helm upgrade` → the pod count catches up to the new value.
+- удали под `api` руками → он вернулся;
+- поменяй `replicas` в `values.yaml`, сделай `helm upgrade` → число подов догнало новое значение.
 
-Now a real rolling update. Bump the `api` image version in `values.yaml` and run `helm upgrade` while hammering `/health` in a loop — confirm not a single request fails and pods roll over one at a time, not all at once.
+Теперь настоящий rolling update. Подними версию образа `api` в `values.yaml` и сделай `helm upgrade`, одновременно долбя `/health` в цикле — убедись, что ни один запрос не провалился, а поды обновляются по одному, а не все разом.
 
-Then ship a deliberately broken version: set `HEALTH_FAIL=true` for `api` and run `helm upgrade` again. Show that the rollout gets stuck — the new pods never pass readiness, so the old healthy ones are never removed and the service keeps responding throughout. Run `helm rollback` to the previous revision and confirm the cluster is back to a healthy state.
+Закати заведомо сломанную версию: выстави `api` переменную `HEALTH_FAIL=true` и снова сделай `helm upgrade`. Покажи, что rollout зависает — новые поды не проходят readiness, поэтому старые исправные не удаляются и сервис продолжает отвечать всё это время. Сделай `helm rollback` на предыдущую ревизию и убедись, что кластер вернулся в рабочее состояние.
 
-## Part 3 — Postgres through an operator
+## Часть 3 — Postgres через оператора
 
-Deploy a database operator (CloudNativePG or the Zalando postgres-operator) once, for the whole cluster. Add a template to your chart that creates the operator's object (e.g. a `Cluster` for CloudNativePG).
+Разверни оператор БД (CloudNativePG или Zalando postgres-operator) один раз на кластер. Добавь в чарт шаблон, который создаёт объект оператора (например, `Cluster` у CloudNativePG).
 
-Delete the `postgres` pod by hand → the operator brings it back. Look at the object (`kubectl get cluster -o yaml`), find `spec` and `status` in it. In the README, compare how an operator differs from `controller-manager`.
+Удали под `postgres` руками → оператор вернул его. Посмотри объект (`kubectl get cluster -o yaml`), найди в нём `spec` и `status`. В README сравни, чем оператор отличается от `controller-manager`.
 
-## Part 4 — Control plane failure
+## Часть 4 — Падение control plane
 
-Stop `etcd` (or `apiserver`) on your kind/k3d/minikube:
+Останови `etcd` (или `apiserver`) своего kind/k3d/minikube:
 
-- try to change something (`helm upgrade`, `kubectl apply`) → the change doesn't go through;
-- check that `api`/`worker`/`postgres` keep responding (`/health`, `/orders`).
+- попробуй что-то изменить (`helm upgrade`, `kubectl apply`) → изменения не проходят;
+- проверь, что `api`/`worker`/`postgres` продолжают отвечать (`/health`, `/orders`).
 
-Bring the control plane back and confirm the cluster is manageable again.
+Верни control plane и убедись, что кластер снова управляем.
 
-## Part 5 — Monitoring
+## Часть 5 — Мониторинг
 
-Add `ServiceMonitor`/`PrometheusRule` templates to the chart, reusing the stack from Lab 2 — don't stand up a new one. Bake 3 alert rules into the chart as `PrometheusRule` templates, and justify each in the README. Trigger at least one and show it in the firing state.
+Добавь в чарт шаблоны `ServiceMonitor`/`PrometheusRule`, используя стек из Лабы 2 — новый не поднимай. Заложи 3 правила алертов как `PrometheusRule` в чарте, обоснуй каждое в README. Спровоцируй срабатывание хотя бы одного и покажи его в состоянии firing.
 
-## Result
+## Результат
 
-What you should end up with:
+Что должно получиться в итоге:
 
-- cluster-wide guardrails (Kyverno/Gatekeeper) are in place, set up before the chart;
-- the `shop` Helm chart (`api`, `worker`, `postgres` through an operator) installs clean from scratch, with zero rejections;
-- the `api` and `postgres` pods come back on their own after a manual delete;
-- when the control plane goes down, `shop` keeps responding, and once it's back the cluster is manageable again;
-- a dashboard and 3 alerts on top of the Lab 2 stack.
+- на кластере стоят ограждения политикой (Kyverno/Gatekeeper), заведённые раньше чарта;
+- Helm-чарт `shop` (`api`, `worker`, `postgres` через оператора) ставится с нуля без единого отклонения;
+- под `api` и под `postgres` при ручном удалении возвращаются сами;
+- при падении control plane `shop` продолжает отвечать, а после восстановления кластер снова управляем;
+- дашборд и 3 алерта поверх стека из Лабы 2.
 
-## What to submit
+## Что сдать
 
-- The `api`/`worker` code with a Dockerfile (any implementation, doesn't affect the grade).
-- The cluster guardrail bundle (Kyverno/Gatekeeper policies).
-- The `shop` Helm chart: `Chart.yaml`, `values.yaml`, all templates, including the database's CRD object and `PrometheusRule`/`ServiceMonitor`.
-- `README.md`: the policy engine choice and rule rationale (Part 1); what reconciliation showed on the chart, including the rolling update and the rollback of a broken version (Part 2); reconciliation and the CRD on the operator, and how an operator differs from `controller-manager` (Part 3); what survived the control plane failure (Part 4); the rationale for the 3 alerts (Part 5).
-- Screenshots: of the whole process.
+- Код `api`/`worker` с Dockerfile (реализация любая, на оценку не влияет).
+- Пакет ограждений кластера (политики Kyverno/Gatekeeper).
+- Helm-чарт `shop`: `Chart.yaml`, `values.yaml`, все шаблоны, включая CRD-объект БД и `PrometheusRule`/`ServiceMonitor`.
+- `README.md`: выбор движка политик и обоснование правил (Часть 1); что показала reconciliation на чарте, включая rolling update и rollback сломанной версии (Часть 2); reconciliation и CRD на операторе, чем оператор отличается от `controller-manager` (Часть 3); что выжило при падении control plane (Часть 4); обоснование 3 алертов (Часть 5).
+- Скриншоты: всего процесса.
 
-## How to start
+## Как начать
 
-Open the repository with your AI assistant and ask for help with Lab 3. Generate `api` and `worker` (Part 0), then go in order from Part 1. The assistant works step by step and checks your understanding; it won't hand you finished policy rules or chart templates.
+Открой репозиторий с AI-ассистентом и попроси помочь с Лабой 3. Сгенерируй `api` и `worker` (Часть 0), дальше иди по порядку с Части 1. Ассистент ведёт по шагам и проверяет понимание, готовые правила политик и шаблоны чарта не выдаёт.
 
-> Using AI? Make sure the assistant follows the rules in [`AGENTS.md`](../AGENTS.md). Most tools pick it up automatically; if not, point it at the file.
+> Пользуешься AI? Проверь, что ассистент следует правилам из [`AGENTS.md`](../AGENTS.md). Большинство инструментов подхватывают его сами; если нет — укажи ему на этот файл.
