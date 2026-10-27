@@ -1,0 +1,2 @@
+env:
+  ALERTMANAGER_URI: "http://alertmanager:9093"

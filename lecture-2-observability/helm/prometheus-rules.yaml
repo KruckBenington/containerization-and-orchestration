@@ -1,0 +1,37 @@
+server:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+serverFiles:
+  alerting_rules.yml:
+    groups:
+      - name: api-alerts
+        rules:
+          - alert: HighHttpErrorRate
+            expr: (sum(rate(http_errors_total[2m])) / sum(rate(http_requests_total[2m])) * 100) > 10
+            for: 30s
+            labels:
+              severity: critical
+            annotations:
+              summary: "High HTTP 5xx error rate on api"
+              description: "5xx error rate exceeds 10% for the last 2 minutes"
+
+          - alert: HighLatencyP95
+            expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[2m]))) > 1.0
+            for: 30s
+            labels:
+              severity: critical
+            annotations:
+              summary: "High latency p95"
+              description: "95% of requests take more than 1 second over 2 minutes"
+
+          - alert: ServiceDown
+            expr: up{app="api"} == 0 or absent(up{app="api"}) == 1
+            for: 30s
+            labels:
+              severity: critical
+            annotations:
+              summary: "Service api is down"
+              description: "Prometheus cannot scrape metrics from api pod"
