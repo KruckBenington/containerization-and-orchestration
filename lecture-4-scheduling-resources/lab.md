@@ -1,79 +1,79 @@
-# Lab 4 — SLA of the critical path under overload
+# Лаба 4 — SLA критического пути под перегрузкой
 
-## Situation
+## Ситуация
 
-`shop` has a critical path — placing an order (`api → postgres`) — and secondary background load, like nightly analytics, that can be sacrificed under pressure. All configuration goes through the `shop` Helm chart from Lab 3: affinity, priorities, resources, PodDisruptionBudget — chart values and templates, not one-off kubectl patches. By hand you only observe and trigger load.
+В `shop` есть критический путь — оформление заказа (`api → postgres`) — и второстепенная фоновая нагрузка вроде ночной аналитики, которой под давлением можно пожертвовать. Вся настройка идёт через Helm-чарт `shop` из Лабы 3: affinity, приоритеты, ресурсы, PodDisruptionBudget — значения и шаблоны чарта, а не разовые kubectl-патчи. Руками ты только наблюдаешь и провоцируешь нагрузку.
 
-You don't guess the requests/limits for the critical path — `krr` (Kubernetes Resource Recommender) gives them to you based on real usage from Prometheus.
+Числа для requests/limits критического пути ты не придумываешь — их даёт `krr` (Kubernetes Resource Recommender) по реальному потреблению из Prometheus.
 
-## Part 0 — The batch service
+## Часть 0 — Сервис batch
 
-Generate `batch` — a container that burns CPU and memory in an infinite loop, doing nothing useful. Stand-in for "nightly analytics." Implementation isn't graded.
+Сгенерируй `batch` — контейнер, который в бесконечном цикле жрёт CPU и память, не делая ничего полезного. Заглушка для «ночной аналитики». Реализация не оценивается.
 
-## Part 1 — Pick a spreading mechanism
+## Часть 1 — Выбери механизм разнесения
 
-Add a choice parameter to `values.yaml`: `podAntiAffinity` or `topologySpreadConstraints`. Justify in the README how they differ and why you picked this one.
+Добавь в `values.yaml` параметр выбора между `podAntiAffinity` и `topologySpreadConstraints`. Обоснуй в README, чем один отличается от другого и почему выбрал именно этот.
 
-## Part 2 — A tight cluster
+## Часть 2 — Тесная площадка
 
-Bring up a kind/k3d cluster with **strictly 1-2 nodes** — small on purpose, so scarcity is easy to trigger. Add `batch` as a new template in the `shop` chart, with sensible requests/limits — like any pod, the Lab 3 guardrails apply with no exceptions — and deploy via `helm upgrade`.
+Подними кластер kind/k3d **строго на 1-2 ноды** — намеренно мало, чтобы легко получить нехватку ресурсов. Добавь `batch` новым шаблоном в чарт `shop`, с разумными requests/limits — как у любого пода, гвардрейлы Лабы 3 действуют без исключений — и разверни через `helm upgrade`.
 
-## Part 3 — Real numbers instead of guessing
+## Часть 3 — Реальные числа вместо угадывания
 
-Run `k6`/`hey` against the order path, let Prometheus collect some data. Run `krr` against your namespace — it analyzes real usage of `api`, `worker`, `postgres` and recommends requests/limits. Put the recommended values into `values.yaml`, deploy via `helm upgrade`. In the README, compare your original guess with what `krr` recommended and explain the gap.
+Прогони `k6`/`hey` по пути заказа, дай Prometheus насобирать данные. Запусти `krr` против своего namespace — он проанализирует реальное потребление `api`, `worker`, `postgres` и предложит requests/limits. Пропиши рекомендованные значения в `values.yaml`, задеплой через `helm upgrade`. В README сравни свою изначальную догадку с тем, что предложил `krr`, и объясни расхождение.
 
-## Part 4 — Spread the critical service
+## Часть 4 — Разнеси критический сервис
 
-Apply the mechanism from Part 1 to `api`. Prove (`kubectl get pods -o wide`) the replicas landed on different nodes. Explain in the README how this improves fault tolerance.
+Примени механизм из Части 1 к `api`. Докажи (`kubectl get pods -o wide`), что реплики оказались на разных нодах. Опиши в README, как это повышает отказоустойчивость.
 
-## Part 5 — Set priorities and guarantees
+## Часть 5 — Приоритеты и гарантии
 
-Add `priorityClass` and `PodDisruptionBudget` templates to the chart, values driven by `values.yaml`:
+Добавь в чарт шаблоны `priorityClass` и `PodDisruptionBudget`, значения — через `values.yaml`:
 
-- `api`, `postgres` — Guaranteed QoS on the numbers from Part 3 (requests = limits), a high `priorityClass`, a PodDisruptionBudget;
-- `batch` — Burstable QoS (requests well below limits), a low `priorityClass`. It still has limits, same as the guardrails require for everyone — it's just less protected by priority and QoS class.
+- `api`, `postgres` — QoS Guaranteed на числах из Части 3 (requests = limits), высокий priorityClass, PodDisruptionBudget;
+- `batch` — QoS Burstable (requests заметно ниже limits), низкий priorityClass. Лимиты у него есть, как и требуют гвардрейлы, — просто по приоритету и классу он менее защищён.
 
-Explain in the README what each setting buys you under pressure, and how Burstable differs from Guaranteed in eviction order.
+Объясни в README, что каждая настройка даёт под давлением и чем Burstable отличается от Guaranteed по порядку вытеснения.
 
-## Part 6 — Create scarcity, catch preemption
+## Часть 6 — Создай нехватку, поймай preemption
 
-Raise `batch.replicas` in `values.yaml`, run `helm upgrade`, until the cluster stops fitting everything. Show and explain:
+Подними `batch.replicas` в `values.yaml`, сделай `helm upgrade`, пока кластер не перестанет всё вмещать. Покажи и объясни:
 
-- pods stuck `Pending` — who didn't fit and why (the scheduler counts reserved requests, not real usage);
-- preemption — how the higher-priority `api`/`postgres` evict `batch` to get room.
+- поды в `Pending` — кто не влез и почему (планировщик считает по requests, не по факту);
+- preemption — как `api`/`postgres` (выше приоритетом) вытесняют `batch`, чтобы получить место.
 
-## Part 7 — Memory pressure, the eviction order
+## Часть 7 — Давление по памяти, порядок жертв
 
-Raise `batch`'s memory use via `values.yaml` until you get real memory pressure on a node. Prove eviction takes `batch` first — the less-protected Burstable, low-priority pod — while the critical path (Guaranteed) survives. Explain in the README how this differs from `OOMKilled` by a pod's own limit — two different diagnoses with the same symptom.
+Через `values.yaml` подними потребление `batch`, дождись давления по памяти на ноде. Докажи, что eviction забирает `batch` первым — как менее защищённый Burstable-под с низким приоритетом, — критический путь (Guaranteed) остаётся. Объясни в README разницу с `OOMKilled` по собственному лимиту — два разных диагноза с одинаковым симптомом.
 
-## Part 8 — Prove the SLA under load
+## Часть 8 — Докажи SLA под нагрузкой
 
-While Parts 6–7 are underway, run `k6`/`hey` against the order path and capture latency and error graphs. State your own SLA (e.g. "95% of orders under 300ms, even under overload") and show on the graphs that it holds — while `batch` is what degrades.
+Параллельно с Частями 6–7 гони `k6`/`hey` по пути заказа, снимай графики задержки и ошибок. Сформулируй свой SLA (например, «95% заказов быстрее 300 мс даже под перегрузкой») и покажи графиками, что он держится, а деградирует именно `batch`.
 
-## Part 9 — Monitoring
+## Часть 9 — Мониторинг
 
-Add `ServiceMonitor`/`PrometheusRule` templates to the chart, reusing the stack from Lab 2. Bake in 3 alerts, justify each in the README. Trigger at least one and show it firing.
+Добавь в чарт шаблоны `ServiceMonitor`/`PrometheusRule`, используя стек из Лабы 2. Заложи 3 алерта, обоснуй каждый в README. Спровоцируй срабатывание хотя бы одного, покажи в состоянии firing.
 
-## Result
+## Результат
 
-- `api` replicas provably spread across nodes, even on a 1-2 node cluster;
-- the critical path's requests/limits come from `krr`'s recommendations, not guesswork;
-- every pod, including `batch`, has limits — Lab 3's guardrails apply with no exceptions;
-- `Pending` and preemption under scarcity — observed and explained;
-- eviction under memory pressure sacrifices `batch` first, by QoS/priority, not by missing limits;
-- an SLA on the order path that holds under overload, backed by load-test graphs;
-- a dashboard and 3 alerts on top of the Lab 2 stack, baked into the chart.
+- реплики `api` доказуемо разнесены по нодам, даже при кластере на 1-2 ноды;
+- requests/limits критического пути взяты из рекомендаций `krr`, не с потолка;
+- у всех подов, включая `batch`, есть лимиты — гвардрейлы Лабы 3 без исключений;
+- `Pending` и preemption под нехваткой ресурсов — увидены и объяснены;
+- eviction под давлением по памяти жертвует `batch` первым за счёт QoS/приоритета, а не отсутствия лимитов;
+- SLA на пути заказа держится под перегрузкой, подтверждено графиками;
+- дашборд и 3 алерта поверх стека Лабы 2, встроенные в чарт.
 
-## What to submit
+## Что сдать
 
-- The `batch` code with a Dockerfile (any implementation, doesn't affect the grade).
-- The updated `shop` Helm chart: the `batch` template, `priorityClass`, `PodDisruptionBudget`, `ServiceMonitor`/`PrometheusRule`, the final `values.yaml`.
-- The `krr` report (recommendations) and a comparison against your original guess.
-- `README.md`: the spreading mechanism and why (Part 1); `krr`'s recommendations vs. your guess (Part 3); proof of spread (Part 4); the priority/QoS/PDB setup and the Burstable vs Guaranteed difference (Part 5); what `Pending`/preemption showed (Part 6); what eviction showed (Part 7); your SLA and the load-test graphs (Part 8); the 3 alerts and their rationale (Part 9).
-- Screenshots: replicas on different nodes; the `krr` report; pods `Pending`; a preemption event; an eviction event; the order-path latency/error graphs under load; the dashboard.
+- Код `batch` с Dockerfile (реализация любая, на оценку не влияет).
+- Обновлённый Helm-чарт `shop`: шаблон `batch`, `priorityClass`, `PodDisruptionBudget`, `ServiceMonitor`/`PrometheusRule`, финальный `values.yaml`.
+- Отчёт `krr` (рекомендации) и сравнение с изначальной догадкой.
+- `README.md`: выбор механизма разнесения (Часть 1); рекомендации `krr` vs догадка (Часть 3); доказательство разнесения (Часть 4); настройка приоритетов/QoS/PDB и разница Burstable/Guaranteed (Часть 5); что показали `Pending`/preemption (Часть 6); что показал eviction (Часть 7); SLA и графики (Часть 8); 3 алерта и обоснование (Часть 9).
+- Скриншоты: реплики на разных нодах; отчёт `krr`; поды в `Pending`; момент preemption; момент eviction; графики задержки/ошибок под нагрузкой; дашборд.
 
-## How to start
+## Как начать
 
-Open the repository with your AI assistant and ask for help with Lab 4. Generate `batch` (Part 0), then go in order from Part 1. The assistant works step by step and checks your understanding; it won't hand you finished policies, chart templates, or recommendations.
+Открой репозиторий с AI-ассистентом и попроси помочь с Лабой 4. Сгенерируй `batch` (Часть 0), дальше иди по порядку с Части 1. Ассистент ведёт по шагам и проверяет понимание, готовые политики, шаблоны чарта и рекомендации не выдаёт.
 
-> Using AI? Make sure the assistant follows the rules in [`AGENTS.md`](../AGENTS.md). Most tools pick it up automatically; if not, point it at the file.
+> Пользуешься AI? Проверь, что ассистент следует правилам из [`AGENTS.md`](../AGENTS.md). Большинство инструментов подхватывают его сами; если нет — укажи ему на этот файл.
