@@ -1,0 +1,37 @@
+server:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+serverFiles:
+  alerting_rules.yml:
+    groups:
+      - name: shop-alerts
+        rules:
+          - alert: ShopApiDown
+            expr: kube_deployment_status_replicas_available{deployment="shop-api"} == 0
+            for: 30s
+            labels:
+              severity: critical
+            annotations:
+              summary: "shop-api is down"
+              description: "No ready replicas available for deployment shop-api."
+
+          - alert: ShopApiCrashLooping
+            expr: increase(kube_pod_container_status_restarts_total{pod=~"shop-api-.*"}[2m]) > 1
+            for: 30s
+            labels:
+              severity: critical
+            annotations:
+              summary: "shop-api container is restarting"
+              description: "Pod is crashing and restarting repeatedly."
+
+          - alert: ShopApiHighMemoryUsage
+            expr: container_memory_working_set_bytes{pod=~"shop-api-.*", container="api"} > 100000000
+            for: 30s
+            labels:
+              severity: warning
+            annotations:
+              summary: "shop-api memory limit nearing exhaustion"
+              description: "Container api memory usage exceeded 100MB."

@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bad-limits
+  labels:
+    app.kubernetes.io/name: test
+spec:
+  containers:
+    - name: test
+      image: alpine:3.19
+      securityContext:
+        privileged: false
+        runAsNonRoot: true

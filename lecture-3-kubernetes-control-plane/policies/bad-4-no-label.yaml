@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bad-label
+spec:
+  containers:
+    - name: test
+      image: alpine:3.19
+      resources:
+        limits:
+          cpu: 100m
+          memory: 128Mi
+      securityContext:
+        privileged: false
+        runAsNonRoot: true
