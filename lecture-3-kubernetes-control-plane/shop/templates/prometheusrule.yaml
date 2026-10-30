@@ -2,36 +2,37 @@ apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
   name: shop-api-rules
+  namespace: default
   labels:
-    app.kubernetes.io/name: shop-api
+    release: prometheus-stack
     role: alert-rules
 spec:
   groups:
-    - name: shop-alerts
+    - name: shop-api-alerts
       rules:
-        - alert: ShopApiDown
-          expr: kube_deployment_status_replicas_available{deployment="shop-api"} == 0
+        - alert: HighHttpErrorRate
+          expr: (sum(rate(http_requests_total{job="shop-api",code=~"5.."}[2m])) / sum(rate(http_requests_total{job="shop-api"}[2m])) * 100) > 10
           for: 30s
           labels:
             severity: critical
           annotations:
-            summary: "shop-api is down"
-            description: "No ready replicas available for deployment shop-api."
+            summary: "High HTTP 5xx error rate on shop-api"
+            description: "5xx error rate exceeds 10% for the last 2 minutes"
 
-        - alert: ShopApiCrashLooping
-          expr: increase(kube_pod_container_status_restarts_total{pod=~"shop-api-.*"}[2m]) > 1
+        - alert: HighLatencyP95
+          expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{job="shop-api"}[2m]))) > 1.0
           for: 30s
           labels:
             severity: critical
           annotations:
-            summary: "shop-api container is restarting"
-            description: "Pod is crashing and restarting repeatedly."
+            summary: "High latency p95 on shop-api"
+            description: "95% of requests take more than 1 second over 2 minutes"
 
-        - alert: ShopApiHighMemoryUsage
-          expr: container_memory_working_set_bytes{pod=~"shop-api-.*", container="api"} > 100000000
+        - alert: ServiceDown
+          expr: up{job="shop-api"} == 0 or absent(up{job="shop-api"}) == 1
           for: 30s
           labels:
-            severity: warning
+            severity: critical
           annotations:
-            summary: "shop-api memory limit nearing exhaustion"
-            description: "Container api memory usage exceeded 100MB."
+            summary: "Service shop-api is down"
+            description: "Prometheus cannot scrape metrics from shop-api pod"

@@ -1,6 +1,8 @@
-module shop-api
+module api
 
 go 1.22
 
-require github.com/lib/pq v1.10.9
-
+require (
+	github.com/lib/pq v1.10.9
+	github.com/prometheus/client_golang v1.19.1
+)

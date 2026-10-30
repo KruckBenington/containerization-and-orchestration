@@ -1,0 +1,83 @@
+api:
+  replicaCount: 3
+  priorityClassName: high-priority
+  image:
+    repository: shop-api
+    tag: v2
+    pullPolicy: IfNotPresent
+  env:
+    healthFail: "false"
+  resources:
+    limits:
+      cpu: 175m
+      memory: 109Mi
+    requests:
+      cpu: 175m
+      memory: 109Mi
+  topologySpread:
+    enabled: true
+    maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+  antiAffinity:
+    enabled: false
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+
+worker:
+  replicaCount: 2
+  image:
+    repository: shop-worker
+    tag: v1
+    pullPolicy: IfNotPresent
+  resources:
+    limits:
+      cpu: 12m
+      memory: 100Mi
+    requests:
+      cpu: 10m
+      memory: 100Mi
+
+postgres:
+  priorityClassName: high-priority
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "100m"
+      memory: "256Mi"
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+batch:
+  replicaCount: 1
+  priorityClassName: low-priority
+  image:
+    repository: shop-batch
+    tag: v1
+    pullPolicy: Never
+  nodeSelector:
+    kubernetes.io/hostname: minikube-m04
+  resources:
+    limits:
+      cpu: "1000m"
+      memory: "8000Mi"
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+  args:
+    - "-mem=3100"
+
+
+priorityClasses:
+  - name: high-priority
+    value: 1000000
+    globalDefault: false
+    description: "Priority class for shop-api"
+  - name: low-priority
+    value: 1000
+    globalDefault: false
+    description: "Low priority for batch jobs"

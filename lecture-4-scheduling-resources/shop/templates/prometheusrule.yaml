@@ -1,0 +1,37 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: shop-alerts
+  labels:
+    app.kubernetes.io/name: shop-api
+    release: prometheus-stack
+spec:
+  groups:
+  - name: shop.rules
+    rules:
+    - alert: ShopApiHighLatency
+      expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=~".*shop-api.*"}[1m])) by (le)) > 0.3
+      for: 30s
+      labels:
+        severity: critical
+      annotations:
+        summary: "API latency exceeds 300ms SLA"
+        description: "p95 latency is above 300ms for 30s"
+
+    - alert: PodOOMKilledDetected
+      expr: kube_pod_container_status_terminated_reason{reason="OOMKilled"} > 0
+      for: 0m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Container killed by OOM"
+        description: 'Pod {{ "{{" }} $labels.pod {{ "}}" }} exceeded memory limit'
+
+    - alert: ShopApiPodPending
+      expr: kube_pod_status_phase{phase="Pending", pod=~"shop-api.*"} == 1
+      for: 30s
+      labels:
+        severity: critical
+      annotations:
+        summary: "Critical API pod is Pending"
+        description: "Pod cannot be scheduled due to lack of resources"

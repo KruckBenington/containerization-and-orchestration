@@ -1,0 +1,14 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: shop-api-monitor
+  labels:
+    app.kubernetes.io/name: shop-api
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: shop-api
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s

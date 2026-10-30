@@ -1,0 +1,23 @@
+{{- if and .Values.api .Values.api.podDisruptionBudget .Values.api.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: shop-api-pdb
+spec:
+  minAvailable: {{ .Values.api.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: shop-api
+{{- end }}
+---
+{{- if and .Values.postgres .Values.postgres.podDisruptionBudget .Values.postgres.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: shop-postgres-pdb
+spec:
+  minAvailable: {{ .Values.postgres.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      cnpg.io/cluster: shop-postgres
+{{- end }}

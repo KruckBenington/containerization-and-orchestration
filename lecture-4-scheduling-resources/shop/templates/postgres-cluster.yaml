@@ -1,0 +1,24 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: shop-postgres
+  labels:
+    app.kubernetes.io/name: shop-postgres
+spec:
+  instances: 1
+  storage:
+    size: 1Gi
+  bootstrap:
+    initdb:
+      database: app
+      owner: app
+  resources:
+    requests:
+      cpu: {{ .Values.postgres.resources.requests.cpu | quote }}
+      memory: {{ .Values.postgres.resources.requests.memory | quote }}
+    limits:
+      cpu: {{ .Values.postgres.resources.limits.cpu | quote }}
+      memory: {{ .Values.postgres.resources.limits.memory | quote }}
+  template:
+    spec:
+      priorityClassName: high-priority
